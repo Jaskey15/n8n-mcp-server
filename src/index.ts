@@ -228,11 +228,11 @@ class N8nMcpServer {
 
   private async listWorkflows() {
     try {
-      const response = await this.axiosInstance.get<{ data: N8nWorkflow[] }>(
+      const response = await this.axiosInstance.get<N8nWorkflow[]>(
         "/workflows"
       );
 
-      const workflows = response.data.data.map((workflow) => ({
+      const workflows = response.data.map((workflow) => ({
         id: workflow.id,
         name: workflow.name,
         active: workflow.active,
@@ -264,11 +264,11 @@ class N8nMcpServer {
 
   private async getWorkflow(workflowId: string) {
     try {
-      const response = await this.axiosInstance.get<{ data: N8nWorkflowDetail }>(
+      const response = await this.axiosInstance.get<N8nWorkflowDetail>(
         `/workflows/${workflowId}`
       );
 
-      const workflow = response.data.data;
+      const workflow = response.data;
 
       return {
         content: [
@@ -306,7 +306,7 @@ class N8nMcpServer {
       // Validate and cap the limit
       const validLimit = Math.min(Math.max(1, limit || 10), 100);
 
-      const response = await this.axiosInstance.get<{ data: N8nExecution[] }>(
+      const response = await this.axiosInstance.get<N8nExecution[]>(
         `/executions`,
         {
           params: {
@@ -316,7 +316,7 @@ class N8nMcpServer {
         }
       );
 
-      const executions = response.data.data.map((execution) => ({
+      const executions = response.data.map((execution) => ({
         id: execution.id,
         workflowId: execution.workflowId,
         finished: execution.finished,
@@ -357,38 +357,40 @@ class N8nMcpServer {
     data?: Record<string, any>
   ) {
     try {
-      const response = await this.axiosInstance.post<{ data: any }>(
+      const response = await this.axiosInstance.post<any>(
         `/workflows/${workflowId}/activate`,
         data || {}
       );
 
       // Check if workflow is active, if not we need to use test execution
-      const workflowResponse = await this.axiosInstance.get<{
-        data: N8nWorkflow;
-      }>(`/workflows/${workflowId}`);
+      const workflowResponse = await this.axiosInstance.get<N8nWorkflow>(
+        `/workflows/${workflowId}`
+      );
 
       let executionId: string | undefined;
 
-      if (workflowResponse.data.data.active) {
+      if (workflowResponse.data.active) {
         // For active workflows, trigger via webhook or test
         // Note: The actual trigger method depends on how the workflow is configured
         // For manual triggers, we can use the test endpoint
-        const testResponse = await this.axiosInstance.post<{
-          data: { executionId: string };
-        }>(`/workflows/${workflowId}/test`, {
-          workflowData: workflowResponse.data.data,
-          runData: data,
-        });
-        executionId = testResponse.data.data.executionId;
+        const testResponse = await this.axiosInstance.post<{ executionId: string }>(
+          `/workflows/${workflowId}/test`,
+          {
+            workflowData: workflowResponse.data,
+            runData: data,
+          }
+        );
+        executionId = testResponse.data.executionId;
       } else {
         // For inactive workflows, we can still test them
-        const testResponse = await this.axiosInstance.post<{
-          data: { executionId: string };
-        }>(`/workflows/${workflowId}/test`, {
-          workflowData: workflowResponse.data.data,
-          runData: data,
-        });
-        executionId = testResponse.data.data.executionId;
+        const testResponse = await this.axiosInstance.post<{ executionId: string }>(
+          `/workflows/${workflowId}/test`,
+          {
+            workflowData: workflowResponse.data,
+            runData: data,
+          }
+        );
+        executionId = testResponse.data.executionId;
       }
 
       return {
@@ -401,7 +403,7 @@ class N8nMcpServer {
                 message: "Workflow triggered successfully",
                 workflowId,
                 executionId,
-                workflowActive: workflowResponse.data.data.active,
+                workflowActive: workflowResponse.data.active,
               },
               null,
               2
