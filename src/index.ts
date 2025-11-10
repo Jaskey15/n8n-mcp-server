@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-
+import "dotenv/config";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -228,11 +228,16 @@ class N8nMcpServer {
 
   private async listWorkflows() {
     try {
-      const response = await this.axiosInstance.get<N8nWorkflow[]>(
-        "/workflows"
+      const response = await this.axiosInstance.get<
+        N8nWorkflow[] | { data: N8nWorkflow[] }
+      >("/workflows");
+
+      const workflowsResponse = this.extractArrayResponse<N8nWorkflow>(
+        response.data,
+        "listing workflows"
       );
 
-      const workflows = response.data.map((workflow) => ({
+      const workflows = workflowsResponse.map((workflow) => ({
         id: workflow.id,
         name: workflow.name,
         active: workflow.active,
@@ -258,17 +263,23 @@ class N8nMcpServer {
         ],
       };
     } catch (error) {
+      if (error instanceof McpError) {
+        throw error;
+      }
       throw this.handleAxiosError(error, "Failed to list workflows");
     }
   }
 
   private async getWorkflow(workflowId: string) {
     try {
-      const response = await this.axiosInstance.get<N8nWorkflowDetail>(
-        `/workflows/${workflowId}`
-      );
+      const response = await this.axiosInstance.get<
+        N8nWorkflowDetail | { data: N8nWorkflowDetail }
+      >(`/workflows/${workflowId}`);
 
-      const workflow = response.data;
+      const workflow = this.extractObjectResponse<N8nWorkflowDetail>(
+        response.data,
+        `fetching workflow ${workflowId}`
+      );
 
       return {
         content: [
@@ -297,6 +308,9 @@ class N8nMcpServer {
         ],
       };
     } catch (error) {
+      if (error instanceof McpError) {
+        throw error;
+      }
       throw this.handleAxiosError(error, `Failed to get workflow ${workflowId}`);
     }
   }
@@ -306,17 +320,21 @@ class N8nMcpServer {
       // Validate and cap the limit
       const validLimit = Math.min(Math.max(1, limit || 10), 100);
 
-      const response = await this.axiosInstance.get<N8nExecution[]>(
-        `/executions`,
-        {
-          params: {
-            workflowId,
-            limit: validLimit,
-          },
-        }
+      const response = await this.axiosInstance.get<
+        N8nExecution[] | { data?: N8nExecution[]; results?: N8nExecution[] }
+      >(`/executions`, {
+        params: {
+          workflowId,
+          limit: validLimit,
+        },
+      });
+
+      const executionsResponse = this.extractArrayResponse<N8nExecution>(
+        response.data,
+        `fetching executions for workflow ${workflowId}`
       );
 
-      const executions = response.data.map((execution) => ({
+      const executions = executionsResponse.map((execution) => ({
         id: execution.id,
         workflowId: execution.workflowId,
         finished: execution.finished,
@@ -345,6 +363,9 @@ class N8nMcpServer {
         ],
       };
     } catch (error) {
+      if (error instanceof McpError) {
+        throw error;
+      }
       throw this.handleAxiosError(
         error,
         `Failed to get executions for workflow ${workflowId}`
@@ -363,20 +384,25 @@ class N8nMcpServer {
       );
 
       // Check if workflow is active, if not we need to use test execution
-      const workflowResponse = await this.axiosInstance.get<N8nWorkflow>(
-        `/workflows/${workflowId}`
+      const workflowResponse = await this.axiosInstance.get<
+        N8nWorkflow | { data: N8nWorkflow }
+      >(`/workflows/${workflowId}`);
+
+      const workflowData = this.extractObjectResponse<N8nWorkflow>(
+        workflowResponse.data,
+        `retrieving workflow ${workflowId} before triggering`
       );
 
       let executionId: string | undefined;
 
-      if (workflowResponse.data.active) {
+      if (workflowData.active) {
         // For active workflows, trigger via webhook or test
         // Note: The actual trigger method depends on how the workflow is configured
         // For manual triggers, we can use the test endpoint
         const testResponse = await this.axiosInstance.post<{ executionId: string }>(
           `/workflows/${workflowId}/test`,
           {
-            workflowData: workflowResponse.data,
+            workflowData: workflowData,
             runData: data,
           }
         );
@@ -386,7 +412,7 @@ class N8nMcpServer {
         const testResponse = await this.axiosInstance.post<{ executionId: string }>(
           `/workflows/${workflowId}/test`,
           {
-            workflowData: workflowResponse.data,
+            workflowData: workflowData,
             runData: data,
           }
         );
@@ -403,7 +429,7 @@ class N8nMcpServer {
                 message: "Workflow triggered successfully",
                 workflowId,
                 executionId,
-                workflowActive: workflowResponse.data.active,
+                workflowActive: workflowData.active,
               },
               null,
               2
@@ -412,11 +438,70 @@ class N8nMcpServer {
         ],
       };
     } catch (error) {
+      if (error instanceof McpError) {
+        throw error;
+      }
       throw this.handleAxiosError(
         error,
         `Failed to trigger workflow ${workflowId}`
       );
     }
+  }
+
+  private extractArrayResponse<T>(
+    payload: unknown,
+    action: string
+  ): T[] {
+    if (Array.isArray(payload)) {
+      return payload as T[];
+    }
+
+    if (payload && typeof payload === "object") {
+      const container = payload as Record<string, unknown>;
+
+      for (const key of ["data", "results", "items"]) {
+        const value = container[key];
+        if (Array.isArray(value)) {
+          return value as T[];
+        }
+      }
+    }
+
+    throw new McpError(
+      ErrorCode.InternalError,
+      `Unexpected response shape from n8n API while ${action}`
+    );
+  }
+
+  private extractObjectResponse<T>(
+    payload: unknown,
+    action: string
+  ): T {
+    if (
+      payload &&
+      typeof payload === "object" &&
+      !Array.isArray(payload)
+    ) {
+      const container = payload as Record<string, unknown>;
+
+      if ("id" in container) {
+        return payload as T;
+      }
+
+      const nested = container["data"];
+      if (
+        nested &&
+        typeof nested === "object" &&
+        !Array.isArray(nested)
+      ) {
+        return nested as T;
+      }
+    }
+
+    throw new McpError(
+      ErrorCode.InternalError,
+      `Unexpected response shape from n8n API while ${action}`
+    );
   }
 
   private determineExecutionStatus(
